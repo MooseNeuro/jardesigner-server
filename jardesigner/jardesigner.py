@@ -25,6 +25,7 @@ import numpy as np
 import math
 import sys
 import time
+import threading
 import matplotlib.pyplot as plt
 import argparse
 import requests
@@ -32,6 +33,7 @@ import csv
 import traceback
 from . import jarmoogli
 from . import jardesignerProtos as jp
+from . import jarReacGraph as jrg
 from . import fixXreacs
 
 from moose.neuroml.NeuroML import NeuroML
@@ -251,10 +253,23 @@ class JarDesigner:
         self.moogli = []
         self.chanDistrib = []
         self.chemDistrib = []
+        self.passiveDistrib = []
         self.adaptorElecComptList = {}
         self.comptDict = {}     # dict of chem compartments
         self.meshDict = {}      # dict of neuroMesh,spineMesh,psdMesh etc
         self.meshMols = {}      # dict of meshName:[molPathTail] in each mesh
+        
+        # ================================================================
+        # BUG FIX #2: Initialize ALL attributes with defaults FIRST
+        # These attributes are now initialized BEFORE JSON loading
+        # ================================================================
+        self.passiveDistrib = []
+        self.plotNames = []
+        self.wavePlotNames = []
+        self._endos = []
+        self._finishedSaving = False
+        self._modelFileNameList = []    # Used to build NSDF files
+        
         # Construct the absolute path to the schema file
         script_dir = os.path.dirname(os.path.abspath(__file__))
         schemaFile_path = os.path.join(script_dir, schemaFile)
@@ -295,6 +310,8 @@ class JarDesigner:
             quit()
 
         #### Now we load in all the fields of the jardesigner class
+        #### If JSON contains values for passiveDistrib, plotNames, etc.,
+        #### they will naturally overwrite the defaults set above
         for key, value in data.items():
             setattr(self, key, value)
         #### Check for command line overrides of content in json file.
@@ -305,7 +322,6 @@ class JarDesigner:
         self._finishedSaving = False
         self._modelFileNameList = []    # Used to build NSDF files
         #### Some empty defaults
-        self.passiveDistrib = []
         self.plotNames = [] # Need to get rid of this, use the existing dict
         self.wavePlotNames = [] # Need to get rid of this, use the existing dict
 
@@ -754,8 +770,9 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             for key, val in i.items():
                 if key != "path":
                     temp.append( key )
-                    temp.append( str( value ) )
+                    temp.append( str( val ) )
             temp.append( "" )
+        #print( "Passive distrib = ", temp )
         self.elecid.passiveDistribution = temp
 
     def buildChanDistrib( self ):
@@ -1250,6 +1267,10 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
                 ret.append( path )
             self.meshMols[ cc.name ] = ret
 
+    def _buildReactionGraph( self ):
+        #rpath = os.path.abspath(os.path.join(self.sessionDir, "reaction_graph.json") )
+        return jrg.get_reaction_graph( "/library" )
+
     def _buildSetupMoogli( self ):
         self.setupMooView = jarmoogli.MooView( self.dataChannelId )
         comptGroupId = "{}_{}_{}".format( "compt", "Vm", 0 )
@@ -1323,6 +1344,30 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             objList = moose.wildcardFind( f"/model/elec/{cc['path']}" )
             #print( "CCCCCCCCHHHAN: objList = ", objList )
             self.setupMooView.makeMoogli( objList, pdict, chanGroupId )
+
+        # Register spine receptor channels (AMPAR, NMDAR, Ca_conc) as invisible
+        # chan drawables. They are absent from chanDistrib but are physically
+        # present on spine heads for excitatory and excitatory_with_Ca spine
+        # types. visible=False suppresses per-spine icons (which would be
+        # cluttered) while still registering them in the scene graph so that
+        # GUI menus can offer them as relpath options.
+        spineDict = dict( DefaultFdict )
+        spineDict["field"] = "other"
+        spineDict["dataType"] = "chan"
+        spineDict["visible"] = False
+        spineIdx = len( self.chanDistrib )
+        for chanName in ['AMPAR', 'NMDAR', 'Ca_conc']:
+            chanObjs = moose.wildcardFind(
+                f"{self.elecid.path}/#head#/{chanName}" )
+            if len( chanObjs ) == 0:
+                continue
+            headCompts = [c.parent for c in chanObjs]
+            spineDict["relpath"] = chanName
+            spineDict["title"] = "chan_" + chanName
+            spineDict["iconNum"] = spineIdx
+            chanGroupId = f"{chanName}.spine.{spineIdx}"
+            self.setupMooView.makeMoogli( headCompts, spineDict, chanGroupId )
+            spineIdx += 1
 
         pdict["field"] = "other"
         pdict["dataType"] = "adaptor"
@@ -1489,7 +1534,7 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             sx = 3 * FIG_HT
             sy = 3 * FIG_WID
 
-        if self.plotFile.split('.')[-1] == "json":
+        if self.plotFile != None and (self.plotFile.split('.')[-1] == "json"):
             self.plots2json( nrows, ncols, self.plotFile )
             return
 
@@ -1824,50 +1869,6 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             assert len(i) >= 8
             self._buildAdaptor( i[0],i[1],i[2],i[3],i[4],i[5],i[6],i[7] )
 
-    '''
-    ################################################################
-    # Utility function to add a single spine to the given parent.
-
-    # parent is parent compartment for this spine.
-    # spineProto is just that.
-    # pos is position (in metres ) along parent compartment
-    # angle is angle (in radians) to rotate spine wrt x in plane xy.
-    # Size is size scaling factor, 1 leaves as is.
-    # x, y, z are unit vectors. Z is along the parent compt.
-    # We first shift the spine over so that it is offset by the parent compt
-    # diameter.
-    # We then need to reorient the spine which lies along (i,0,0) to
-    #   lie along x. X is a unit vector so this is done simply by
-    #   multiplying each coord of the spine by x.
-    # Finally we rotate the spine around the z axis by the specified angle
-    # k is index of this spine.
-    def _addSpine( self, parent, spineProto, pos, angle, x, y, z, size, k ):
-        spine = moose.copy( spineProto, parent.parent, 'spine' + str(k) )
-        kids = spine[0].children
-        coords = []
-        ppos = np.array( [parent.x0, parent.y0, parent.z0] )
-        for i in kids:
-            #print i.name, k
-            j = i[0]
-            j.name += str(k)
-            #print 'j = ', j
-            coords.append( [j.x0, j.y0, j.z0] )
-            coords.append( [j.x, j.y, j.z] )
-            self._scaleSpineCompt( j, size )
-            moose.move( i, self.elecid )
-        origin = coords[0]
-        #print 'coords = ', coords
-        # Offset it so shaft starts from surface of parent cylinder
-        origin[0] -= parent.diameter / 2.0
-        coords = np.array( coords )
-        coords -= origin # place spine shaft base at origin.
-        rot = np.array( [x, [0,0,0], [0,0,0]] )
-        coords = np.dot( coords, rot )
-        moose.delete( spine )
-        moose.connect( parent, "raxial", kids[0], "axial" )
-        self._reorientSpine( kids, coords, ppos, pos, size, angle, x, y, z )
-
-    '''
     ################################################################
     ## The spineid is the parent object of the prototype spine. The
     ## spine prototype can include any number of compartments, and each
@@ -1909,7 +1910,6 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             self.elecid = moose.loadModel( efile, '/library/' + elecname)
         else:
             nm = NeuroML()
-            print("in _loadElec, combineSegments = ", self.combineSegments)
             nm.readNeuroMLFromFile( efile, \
                     params = {'combineSegments': self.combineSegments, \
                     'createPotentialSynapses': True } )
@@ -2079,9 +2079,6 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             elecComptList = [ elec.spineFromCompartment[i.me] for i in mesh.elecComptList ]
             #elecComptList = moose.element( '/model/elec').spineIdsFromCompartmentIds[ mesh.elecComptList ]
             #elecComptList = mesh.elecComptMap
-            print( len( mesh.elecComptList ) )
-            for i,j in zip( elecComptList, mesh.elecComptList ):
-                print( "Lookup: {} {} {}; orig: {} {} {}".format( i.name, i.index, i.fieldIndex, j.name, j.index, j.fieldIndex ))
         else:
             #print("Building adapter: elecComptList '", mesh.elecComptList, "' on mesh: '", mesh.path , "' with elecRelPath = ", elecRelPath )
             elecComptList = mesh.elecComptList
@@ -2121,7 +2118,6 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             i[3].outputOffset = offset
             i[3].scale = scale
             if elecRelPath == 'spine':
-                print( "ISSPINE" )
                 # Check needed in case there were unmapped entries in 
                 # spineIdsFromCompartmentIds
                 elObj = i[0]
@@ -2132,7 +2128,6 @@ print( "Wall Clock Time = {:8.2f}, simtime = {:8.3f}".format( time.time() - _sta
             else:
                 ePath = i[0].path + '/' + elecRelPath
                 #print( "EPATH = ", ePath )
-                #print( "NOT SPINE", ePath )
                 if not( moose.exists( ePath ) ):
                     print( "Error: NOT SPINE", ePath, "DOESN'T EXIST, bailing" )
                     continue
@@ -2169,8 +2164,34 @@ def randomPlacementFunc( numModels, idx ):
     nx = int( np.sqrt( numModels ) )
     return np.random.random()*0.5e-3, np.random.random()*0.5e-3, 0.0
 
+# ============================================================================
+# Pause/Resume Threading Support
+# ============================================================================
+_simulation_thread = None
+_is_paused = False
+_remaining_runtime = 0
+_target_simtime = 0
+
+def _run_simulation(rdes, runtime):
+    """Run MOOSE simulation in background thread."""
+    global _remaining_runtime, _target_simtime, _is_paused
+    
+    start_simtime = moose.element("/clock").currentTime
+    _target_simtime = start_simtime + runtime
+    
+    moose.start(runtime)
+    
+    current_simtime = moose.element("/clock").currentTime
+    _remaining_runtime = max(0, _target_simtime - current_simtime)
+    
+    if _remaining_runtime <= 1e-9 and not _is_paused:
+        rdes.display()
+        time.sleep(0.1)
+        rdes.runMooView.notifySimulationEnd(rdes.dataChannelId)
 
 def serverCommandLoop( rdes ):
+    global _simulation_thread, _is_paused, _remaining_runtime
+    
     # This loop will wait for commands from server.py via stdin
     for line in sys.stdin:
         try:
@@ -2180,32 +2201,60 @@ def serverCommandLoop( rdes ):
 
             if command == "start":
                 runtime = command_data.get("params", {}).get("runtime", rdes.runtime)
-                if moose.element( "/clock" ).currentTime == 0:
-                    if hasattr( rdes, 'moogli' ) and len(rdes.moogli) > 0:
-                        rdes.runMooView.sendSceneGraph( "run" )
+                if moose.element("/clock").currentTime == 0:
+                    if hasattr(rdes, 'moogli') and len(rdes.moogli) > 0:
+                        rdes.runMooView.sendSceneGraph("run")
 
-                #print( "starting on rdes = ", rdes )
-                moose.start(runtime)
-                # Notify client that the run is finished
-                rdes.display()
-                time.sleep(0.1) # Give the filesystem time to flush
-                rdes.runMooView.notifySimulationEnd( rdes.dataChannelId )
+                _is_paused = False
+                _remaining_runtime = runtime
+
+                _simulation_thread = threading.Thread(
+                    target=_run_simulation,
+                    args=(rdes, runtime),
+                    daemon=True
+                )
+                _simulation_thread.start()
+
+            elif command == "pause":
+                if _simulation_thread and _simulation_thread.is_alive():
+                    _is_paused = True
+                    moose.stop()
+                    _simulation_thread.join(timeout=2.0)
+                    print(f"Paused at t={moose.element('/clock').currentTime:.4f}s", flush=True)
+
+            elif command == "resume":
+                if _is_paused and _remaining_runtime > 1e-9:
+                    _is_paused = False
+                    _simulation_thread = threading.Thread(
+                        target=_run_simulation,
+                        args=(rdes, _remaining_runtime),
+                        daemon=True
+                    )
+                    _simulation_thread.start()
+                    print("Simulation resumed", flush=True)
 
             elif command == "reset":
+                if _simulation_thread and _simulation_thread.is_alive():
+                    moose.stop()
+                    _simulation_thread.join(timeout=2.0)
+                _is_paused = False
+                _remaining_runtime = 0
                 moose.reinit()
 
             elif command == "quit":
+                if _simulation_thread and _simulation_thread.is_alive():
+                    moose.stop()
+                    _simulation_thread.join(timeout=2.0)
                 print("Received 'quit' command. Exiting.")
-                break # Exit the while loop and terminate the script
+                break
+
             else:
                 print(f"Warning: Unknown command '{command}'")
 
         except json.JSONDecodeError:
             print(f"Warning: Received non-JSON command: {line.strip()}")
 
-        # Ensure the output buffer is flushed so the server sees the prints
         sys.stdout.flush()
-
 
 
 def main():
@@ -2234,7 +2283,9 @@ def main():
         #print( "jardesigner.py: built model" )
         if rdes.dataChannelId:
             rdes._buildSetupMoogli()
-            rdes.setupMooView.sendSceneGraph( "setup", meshMols=rdes.meshMols )
+            reacGraph = jrg.get_reaction_graph( "/library" )
+            #rdes._buildReactionGraph()
+            rdes.setupMooView.sendSceneGraph( "setup", meshMols=rdes.meshMols, reacGraph = reacGraph )
             #print( "jardesigner.py: sent SceneGraph1 with meshMols:", rdes.meshMols )
     
         moose.reinit()
@@ -2265,4 +2316,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

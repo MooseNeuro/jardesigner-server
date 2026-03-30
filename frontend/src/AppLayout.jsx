@@ -110,8 +110,11 @@ export const AppLayout = (props) => {
     getCurrentJsonData,
     getChemProtos,
     handleStartRun,
+    handlePauseRun,     // Pause handler
+    handleResumeRun,    // Resume handler
     handleResetRun,
     isSimulating,
+    isPaused,           // Pause state
     activeSim,
     liveFrameData,
     isReplaying,
@@ -122,19 +125,45 @@ export const AppLayout = (props) => {
     threeDConfigs,
     meshMolsData,
     simError,     
-    setSimError,  
+    setSimError,
+    elecPaths,
+    spinePaths
   } = props;
 
+  // Extract channel names for use in Plots, Stimuli, and Adaptors.
+  // Two sources are merged:
+  //   1. jsonData.chanProto — channels the user explicitly defined in the model config.
+  //   2. Scene graph drawables with title "chan_*" — includes spine receptor channels
+  //      (AMPAR, NMDAR, Ca_conc) registered by the engine with visible=false. These
+  //      must be included for relpath selection regardless of their display visibility.
+  const channelPrototypes = useMemo(() => {
+    const fromConfig = jsonData.chanProto?.map(p => p.name).filter(Boolean) || [];
+    const setupDrawables = threeDConfigs?.['setup']?.drawables || [];
+    const fromScene = setupDrawables
+      .filter(d => d.title?.startsWith('chan_'))
+      .map(d => d.title.slice(5))  // strip "chan_" prefix to get the prototype name
+      .filter(Boolean);
+    return [...new Set([...fromConfig, ...fromScene])];
+  }, [jsonData.chanProto, threeDConfigs]);
 
   const menuComponents = useMemo(() => ({
     File: <FileMenuBox setJsonContent={updateJsonString} onClearModel={handleClearModel} getCurrentJsonData={getCurrentJsonData} currentConfig={jsonData.fileinfo} clientId={clientId} />,
-    SimOutput: <SimOutputMenuBox onConfigurationChange={updateJsonData} currentConfig={jsonData.files} getChemProtos={getChemProtos} />,
+    SimOutput: <SimOutputMenuBox 
+        onConfigurationChange={updateJsonData} 
+        currentConfig={jsonData.files} 
+        getChemProtos={getChemProtos} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
+    />,
     Run: <RunMenuBox
       onConfigurationChange={updateJsonData}
       currentConfig={{ ...jsonData }}
       onStartRun={handleStartRun}
+      onPauseRun={handlePauseRun}      // Pass pause handler
+      onResumeRun={handleResumeRun}    // Pass resume handler
       onResetRun={handleResetRun}
       isSimulating={isSimulating}
+      isPaused={isPaused}              // Pass pause state
       activeSimPid={activeSim.pid}
       liveFrameData={liveFrameData}
       isReplaying={isReplaying}
@@ -145,43 +174,78 @@ export const AppLayout = (props) => {
         onFileChange={handleMorphologyFileChange} 
         clientId={clientId} 
     />,
-    Spines: <SpineMenuBox onConfigurationChange={updateJsonData} currentConfig={{ spineProto: jsonData.spineProto, spineDistrib: jsonData.spineDistrib }} />,
+    Spines: <SpineMenuBox 
+        onConfigurationChange={updateJsonData} 
+        currentConfig={{ spineProto: jsonData.spineProto, spineDistrib: jsonData.spineDistrib }} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
+    />,
     Channels: <ElecMenuBox 
         onConfigurationChange={updateJsonData} 
         currentConfig={{ chanProto: jsonData.chanProto, chanDistrib: jsonData.chanDistrib }} 
         clientId={clientId}
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
     />,
-    Passive: <PassiveMenuBox onConfigurationChange={updateJsonData} currentConfig={jsonData.passiveDistrib} />,
+    Passive: <PassiveMenuBox 
+        onConfigurationChange={updateJsonData} 
+        currentConfig={jsonData.passiveDistrib} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
+    />,
     Signaling: <ChemMenuBox 
         onConfigurationChange={updateJsonData} 
         currentConfig={{ chemProto: jsonData.chemProto, chemDistrib: jsonData.chemDistrib }} 
         getChemProtos={getChemProtos} 
         clientId={clientId}
         meshMols={meshMolsData?.setup} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
     />,
-    Adaptors: <AdaptorsMenuBox onConfigurationChange={updateJsonData} currentConfig={jsonData.adaptors} />,
+    Adaptors: <AdaptorsMenuBox 
+        onConfigurationChange={updateJsonData} 
+        currentConfig={jsonData.adaptors}
+        meshMols={meshMolsData?.setup} 
+        // --- Added channelPrototypes ---
+        channelPrototypes={channelPrototypes}
+    />,
     Stimuli: <StimMenuBox 
         onConfigurationChange={updateJsonData} 
         currentConfig={jsonData.stims} 
         meshMols={meshMolsData?.setup} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths}
+        // --- Added channelPrototypes ---
+        channelPrototypes={channelPrototypes}
     />,
     Plots: <PlotMenuBox 
         onConfigurationChange={updateJsonData} 
         currentConfig={jsonData.plots} 
         meshMols={meshMolsData?.setup} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths} 
+        // --- Added channelPrototypes ---
+        channelPrototypes={channelPrototypes}
     />,
     '3D': <ThreeDMenuBox 
         onConfigurationChange={updateJsonData} 
         currentConfig={{ moogli: jsonData.moogli, displayMoogli: jsonData.displayMoogli }} 
         meshMols={meshMolsData?.setup} 
+        elecPaths={elecPaths} 
+        spinePaths={spinePaths}
+        channelPrototypes={channelPrototypes}
     />,
   }), [
     jsonData, updateJsonData, updateJsonString, handleClearModel, getCurrentJsonData, getChemProtos,
-    handleStartRun, handleResetRun, isSimulating, activeSim.pid, liveFrameData, isReplaying,
+    handleStartRun, handlePauseRun, handleResumeRun, handleResetRun,  // Added pause handlers
+    isSimulating, isPaused, activeSim.pid, liveFrameData, isReplaying,  // Added isPaused
     handleMorphologyFileChange, 
     clientId,
     threeDConfigs,
-    meshMolsData 
+    meshMolsData,
+    elecPaths, 
+    spinePaths,
+    channelPrototypes // Added to dependency array
   ]);
 
   const errorAnalysis = useMemo(() => analyzeError(simError), [simError]);
