@@ -100,6 +100,7 @@ export const useAppLogic = () => {
     const [isSimulating, setIsSimulating] = useState(false);
     const [clientId] = useState(() => uuidv4());
     const sessionTokenRef = useRef('');
+    const latestTutorialRequestRef = useRef(0);
 
     const [activeSim, setActiveSim] = useState({ pid: null, data_channel_id: null, plot_filename: null });
     const socketRef = useRef(null);
@@ -506,13 +507,17 @@ export const useAppLogic = () => {
     const toggleMenu = (menu) => setActiveMenu(prev => (prev === menu ? null : menu));
 
     const handleLoadTutorial = useCallback(async (name) => {
+        const requestId = ++latestTutorialRequestRef.current;
         try {
             const response = await fetch(`${API_BASE_URL}/load_example/${clientId}/${encodeURIComponent(name)}`, { method: 'POST' });
             if (!response.ok) throw new Error(await response.text());
             const data = await response.json();
+            // Ignore this response if a newer tutorial load has since been requested,
+            // so an out-of-order network response can't stomp a later selection.
+            if (requestId !== latestTutorialRequestRef.current) return;
             if (data.json) {
                 const parsed = JSON.parse(data.json);
-                updateJsonData(parsed);
+                updateJsonData({ ...initialJsonData, ...parsed });
             }
         } catch (err) {
             console.error('Error loading tutorial:', err);
