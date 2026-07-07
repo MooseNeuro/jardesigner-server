@@ -38,13 +38,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     graphviz \
     libgraphviz-dev \
+    clang-18 \
+    robin-map-dev \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CC=clang-18 \
+    CXX=clang++-18
 
 COPY backend/requirements.txt /app/backend/requirements.txt
 
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r /app/backend/requirements.txt && \
-    pip install --no-cache-dir meson meson-python python-libsbml pyneuroml
+    pip install --no-cache-dir meson meson-python python-libsbml pyneuroml pint scipy nanobind
 
 # # Uncomment when building from binary:
 # ARG MOOSE_REPO=https://github.com/mooseneuro/moose-core
