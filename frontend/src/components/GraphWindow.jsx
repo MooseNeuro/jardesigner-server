@@ -103,9 +103,10 @@ const SinglePlot = ({ plotData }) => {
       x: timeArray,
       y: yData,
       type: 'scatter',
-      mode: 'lines',
+      mode: numPoints > 1 ? 'lines' : 'lines+markers',
       name: `Trace ${i + 1}`,
-      line: { width: 3 }
+      line: { width: 3 },
+      marker: { size: 6 },
     }));
 
     // Layout Config
