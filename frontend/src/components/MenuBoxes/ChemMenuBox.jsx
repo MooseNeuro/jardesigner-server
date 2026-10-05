@@ -68,6 +68,15 @@ const locationOptions = [
     'Dendrite', 'Spine', 'PSD', 'Endo', 'Presyn_spine', 'Presyn_dend'
 ];
 
+// Plain-number range warning. Returns message string or null.
+const rangeWarn = (str, min, max, msg) => {
+    if (str === '' || str === undefined || str === null) return null;
+    const n = Number(str);
+    if (isNaN(n)) return null;
+    if (n < min || n > max) return msg;
+    return null;
+};
+
 // --- Default State Creators ---
 const createDefaultChemPrototype = () => ({
     type: prototypeTypeOptions[0],
@@ -106,13 +115,14 @@ const HelpField = React.memo(({ id, label, value, onChange, type = "text", fullW
 
 
 // --- Main Component ---
-const ChemMenuBox = ({ 
-    onConfigurationChange, 
-    currentConfig, 
-    clientId, 
+const ChemMenuBox = ({
+    onConfigurationChange,
+    currentConfig,
+    clientId,
     meshMols,
     elecPaths = [],
-    spinePaths = []
+    spinePaths = [],
+    flushRef
 }) => {
 	console.log("ChemMenuBox rendered. meshMols prop:", meshMols);
     const [prototypes, setPrototypes] = useState(() => {
@@ -465,9 +475,23 @@ const ChemMenuBox = ({
             handleRefreshModel();
         };
     }, [handleRefreshModel]);
-    
+
+    useEffect(() => {
+        if (!flushRef) return;
+        flushRef.current = getChemDataForSave;
+        return () => { flushRef.current = null; };
+    }, [flushRef, getChemDataForSave]);
+
     const activeProtoData = prototypes[activePrototype];
     const activeDistribData = distributions[activeDistribution];
+
+    // --- Distribution field validation (computed once, reused in JSX) ---
+    const spacingN = Number(activeDistribData?.spacing_um);
+    const spacingValid = activeDistribData?.spacing_um !== '' && !isNaN(spacingN);
+    const spacingHardError = spacingValid && spacingN < 0.1;
+    const spacingSoftWarn  = spacingValid && !spacingHardError && spacingN < 0.5;
+    const spacingMsg = spacingHardError ? 'Below minimum spacing (0.1 µm)'
+                     : spacingSoftWarn  ? 'Very fine spacing (< 0.5 µm)' : undefined;
 
     return (
         <Box sx={{ p: 2, bgcolor: 'background.paper' }}>
@@ -512,14 +536,15 @@ const ChemMenuBox = ({
                          {['SBML', 'kkit'].includes(activeProtoData.type) && (
                             <Grid size={12}>
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <TextField 
-                                        fullWidth 
-                                        size="small" 
-                                        label="Source File" 
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        label="Source File"
                                         variant="outlined"
-                                        value={activeProtoData.source} 
+                                        value={activeProtoData.source}
                                         InputProps={{ readOnly: true }}
-                                        helperText="Click button to select file"
+                                        error={!activeProtoData.source}
+                                        helperText={activeProtoData.source ? undefined : 'No file selected — click Select to upload a file'}
                                     />
                                     <Button 
                                         variant="outlined" 
@@ -539,7 +564,10 @@ const ChemMenuBox = ({
 
                          {['User Func', 'In-memory'].includes(activeProtoData.type) && (
                             <Grid size={12}>
-                                <HelpField id="source" label="Source" value={activeProtoData.source} onChange={(id,v) => updatePrototype(activePrototype, id, v)} helptext={helpText.prototypes.source} required />
+                                <HelpField id="source" label="Source" value={activeProtoData.source} onChange={(id,v) => updatePrototype(activePrototype, id, v)} helptext={helpText.prototypes.source} required
+                                    error={!activeProtoData.source}
+                                    helperText={!activeProtoData.source ? 'Enter a source function or model name' : undefined}
+                                />
                             </Grid>
                         )}
                     </Grid>
@@ -596,16 +624,31 @@ const ChemMenuBox = ({
                          
                          {/* Row 3: Chem Compartment and Diffusion Length */}
                          <Grid size={{ xs: 12, sm: 6 }}>
-                             <HelpField id="prototype" label="Chem Compartment" select required value={activeDistribData.prototype} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.prototype}>
+                             <HelpField id="prototype" label="Chem Compartment" select required
+                                 error={!activeDistribData.prototype}
+                                 helperText={!activeDistribData.prototype ? 'Select a compartment' : undefined}
+                                 value={activeDistribData.prototype}
+                                 onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                 helptext={helpText.distributions.prototype}
+                             >
                                 <MenuItem value=""><em>Select...</em></MenuItem>
                                 {chemCompartmentOptions.map((meshName) => <MenuItem key={meshName} value={meshName}>{meshName}</MenuItem>)}
                             </HelpField>
                          </Grid>
-                         {activeDistribData.location === 'Dendrite' && (
-                             <Grid size={{ xs: 12, sm: 6 }}>
-                                 <HelpField id="diffusionLength_um" label="Diffusion Length (μm)" type="number" value={activeDistribData.diffusionLength_um} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.diffusionLength} />
-                             </Grid>
-                         )}
+                         {activeDistribData.location === 'Dendrite' && (() => {
+                             const diffWarn = rangeWarn(activeDistribData.diffusionLength_um, 1, 10000, 'Unusual diffusion length (typical range: 1–10,000 µm)');
+                             return (
+                                 <Grid size={{ xs: 12, sm: 6 }}>
+                                     <HelpField id="diffusionLength_um" label="Diffusion Length (μm)" type="number"
+                                         value={activeDistribData.diffusionLength_um}
+                                         onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                         helptext={helpText.distributions.diffusionLength}
+                                         helperText={diffWarn || undefined}
+                                         {...(diffWarn && { FormHelperTextProps: { sx: { color: 'warning.main' } } })}
+                                     />
+                                 </Grid>
+                             );
+                         })()}
 
                          {/* --- Location-Specific Fields --- */}
 
@@ -615,19 +658,37 @@ const ChemMenuBox = ({
                              </Grid>
                          )}
 
-                         {activeDistribData.location === 'Endo' && (
-                             <>
-                                 <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="parent" label="Parent" value={activeDistribData.parent} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.parent} />
-                                 </Grid>
-                                 <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="radiusRatio" label="Radius Ratio" type="number" value={activeDistribData.radiusRatio} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.radiusRatio} />
-                                 </Grid>
-                                  <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="spacing_um" label="Spacing (μm)" type="number" value={activeDistribData.spacing_um} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.spacing} />
-                                 </Grid>
-                             </>
-                         )}
+                         {activeDistribData.location === 'Endo' && (() => {
+                             const rrWarn = rangeWarn(activeDistribData.radiusRatio, 0, 1, 'Radius ratio must be between 0 and 1 (endosome must fit inside parent)');
+                             const rrN = Number(activeDistribData.radiusRatio);
+                             const rrHard = !isNaN(rrN) && activeDistribData.radiusRatio !== '' && (rrN <= 0 || rrN >= 1);
+                             return (
+                                 <>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="parent" label="Parent" value={activeDistribData.parent} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.parent} />
+                                     </Grid>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="radiusRatio" label="Radius Ratio" type="number"
+                                             value={activeDistribData.radiusRatio}
+                                             onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                             helptext={helpText.distributions.radiusRatio}
+                                             error={rrHard}
+                                             helperText={rrHard ? 'Must be between 0 and 1 (exclusive)' : undefined}
+                                         />
+                                     </Grid>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="spacing_um" label="Spacing (μm)" type="number"
+                                             value={activeDistribData.spacing_um}
+                                             onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                             helptext={helpText.distributions.spacing}
+                                             error={spacingHardError}
+                                             helperText={spacingMsg}
+                                             {...(spacingSoftWarn && { FormHelperTextProps: { sx: { color: 'warning.main' } } })}
+                                         />
+                                     </Grid>
+                                 </>
+                             );
+                         })()}
 
                          {activeDistribData.location === 'Presyn_spine' && (
                              <>
@@ -640,19 +701,42 @@ const ChemMenuBox = ({
                              </>
                          )}
 
-                         {activeDistribData.location === 'Presyn_dend' && (
-                             <>
-                                 <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="radius_um" label="Radius (μm)" type="number" value={activeDistribData.radius_um} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.radius} />
-                                 </Grid>
-                                 <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="radiusSdev_um" label="Radius Sdev (μm)" type="number" value={activeDistribData.radiusSdev_um} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.radiusSdev} />
-                                 </Grid>
-                                 <Grid size={{ xs: 12, sm: 6 }}>
-                                     <HelpField id="spacing_um" label="Spacing (μm)" type="number" value={activeDistribData.spacing_um} onChange={(id,v) => updateDistribution(activeDistribution, id, v)} helptext={helpText.distributions.spacing} />
-                                 </Grid>
-                             </>
-                         )}
+                         {activeDistribData.location === 'Presyn_dend' && (() => {
+                             const radWarn  = rangeWarn(activeDistribData.radius_um, 0.2, 5, 'Unusual radius (typical range: 0.2–5 µm)');
+                             const rsdevWarn = rangeWarn(activeDistribData.radiusSdev_um, 0, 5, 'Radius Sdev > 5 µm is unusually large');
+                             return (
+                                 <>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="radius_um" label="Radius (μm)" type="number"
+                                             value={activeDistribData.radius_um}
+                                             onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                             helptext={helpText.distributions.radius}
+                                             helperText={radWarn || undefined}
+                                             {...(radWarn && { FormHelperTextProps: { sx: { color: 'warning.main' } } })}
+                                         />
+                                     </Grid>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="radiusSdev_um" label="Radius Sdev (μm)" type="number"
+                                             value={activeDistribData.radiusSdev_um}
+                                             onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                             helptext={helpText.distributions.radiusSdev}
+                                             helperText={rsdevWarn || undefined}
+                                             {...(rsdevWarn && { FormHelperTextProps: { sx: { color: 'warning.main' } } })}
+                                         />
+                                     </Grid>
+                                     <Grid size={{ xs: 12, sm: 6 }}>
+                                         <HelpField id="spacing_um" label="Spacing (μm)" type="number"
+                                             value={activeDistribData.spacing_um}
+                                             onChange={(id,v) => updateDistribution(activeDistribution, id, v)}
+                                             helptext={helpText.distributions.spacing}
+                                             error={spacingHardError}
+                                             helperText={spacingMsg}
+                                             {...(spacingSoftWarn && { FormHelperTextProps: { sx: { color: 'warning.main' } } })}
+                                         />
+                                     </Grid>
+                                 </>
+                             );
+                         })()}
                      </Grid>
                      <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => removeDistribution(activeDistribution)} sx={{ mt: 2 }}>
                          Remove Distribution

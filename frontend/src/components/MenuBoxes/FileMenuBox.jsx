@@ -355,6 +355,8 @@ const FileMenuBox = ({ setJsonContent, currentConfig, getCurrentJsonData, client
                         label="Suggested File Name"
                         value={modelFileName}
                         onChange={(e) => setModelFileName(e.target.value)}
+                        helperText={/[/\\:*?"<>|]/.test(modelFileName) ? 'Contains characters invalid in filenames (/ \\ : * ? " < > |)' : undefined}
+                        FormHelperTextProps={/[/\\:*?"<>|]/.test(modelFileName) ? { sx: { color: 'warning.main' } } : undefined}
                     />
                 </Grid>
                 <Grid size={12}>
